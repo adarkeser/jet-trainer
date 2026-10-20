@@ -296,6 +296,7 @@ createTuner({ world, graphics });
 
 const menu = createMenu(document.getElementById('menu'), controls, {
   onFly: () => requestFly(false),
+  onPadFly: () => requestFly(true),
   onQuality: (mode) => graphics.setQuality(mode),
   onUnits: (level) => targets.setUnits(level),
   onJetType: (type) => {
@@ -439,6 +440,7 @@ function frame() {
     if (state.paused) requestFly(true);
     else stopFlying();
   }
+  if (state.paused) menu.padNav(performance.now(), dt);
   if (!state.paused && rawDt < 0.25) adaptResolution(rawDt);
   if (!state.paused) step(dt);
   placeCamera(dt);
