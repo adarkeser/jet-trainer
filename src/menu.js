@@ -18,12 +18,43 @@ function setFullscreen(on) {
   else (document.exitFullscreen || document.webkitExitFullscreen)?.call(document)?.catch?.(() => {});
 }
 
-export function createMenu(root, controls, { onFly, onQuality, onJetType, onUnits }) {
+// Controller navigation in the menu. Fixed buttons, whatever the flight bindings are:
+// D-pad or left stick moves, Cross presses, Circle or Options starts flying,
+// left and right move a slider, the right stick scrolls the card.
+const NAV_DIRS = {
+  up: ['Pad12', 'Axis1-'],
+  down: ['Pad13', 'Axis1+'],
+  left: ['Pad14', 'Axis0-'],
+  right: ['Pad15', 'Axis0+'],
+};
+const NAV_DELAY = 380; // ms before a held direction repeats
+const NAV_REPEAT = 110;
+
+const center = (r) => ({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+// The real checkboxes are hidden, their drawn box is the label next to them.
+const rectOf = (el) => (el.classList.contains('sr') && el.nextElementSibling ? el.nextElementSibling : el).getBoundingClientRect();
+
+// A selector that finds the same control again after the card is redrawn.
+function keyOf(el) {
+  if (el.id) return `#${CSS.escape(el.id)}`;
+  const attrs = [...el.attributes].filter((a) => a.name.startsWith('data-'));
+  if (!attrs.length) return null;
+  return attrs.map((a) => (a.value ? `[${a.name}="${CSS.escape(a.value)}"]` : `[${a.name}]`)).join('');
+}
+
+export function createMenu(root, controls, { onFly, onPadFly, onQuality, onJetType, onUnits }) {
   let waiting = null; // { action, slot } while rebinding
   let message = '';
   let leaveTimer = 0;
   let visible = false;
   let keyView = null; // 'keys' or 'pad' once picked; until then it follows whether a controller is connected
+  const nav = { dir: null, next: 0 };
+
+  // Show the focus ring only while the controller drives the menu.
+  const padNavOff = () => root.classList.remove('pad-nav');
+  root.addEventListener('mousemove', padNavOff);
+  root.addEventListener('mousedown', padNavOff);
+  addEventListener('keydown', padNavOff);
 
   // Keep the checkbox right when full screen ends another way (Esc, the browser's own button).
   const syncFullscreen = () => {
@@ -86,7 +117,7 @@ export function createMenu(root, controls, { onFly, onQuality, onJetType, onUnit
     const padName = gp ? escape(gp.id.replace(/\s*\(.*\)\s*$/, '')) || 'Controller' : '';
     const menuBtn = controls.padStyle === 'xbox' ? 'Menu' : 'Options';
     const padStatus = gp
-      ? `<p class="pad-status on"><b>${padName}</b> connected. Press ${menuBtn} to fly, and again to come back here.</p>
+      ? `<p class="pad-status on"><b>${padName}</b> connected. Move through this card with the D-pad or left stick, ${controls.padStyle === 'xbox' ? 'A' : 'Cross'} to choose. ${menuBtn} flies, and brings you back here.</p>
         ${gp.mapping !== 'standard' ? '<p class="hint">This browser does not report a standard layout for this controller, so the defaults may be wrong. Chrome and Edge read the DualSense correctly, or rebind the inputs below.</p>' : ''}`
       : '<p class="pad-status">No controller found. Connect a DualSense (or any gamepad) by USB or Bluetooth and press a button on it.</p>';
     const view = keyView || (gp ? 'pad' : 'keys');
@@ -95,6 +126,8 @@ export function createMenu(root, controls, { onFly, onQuality, onJetType, onUnit
     // Rebinding redraws the card, so keep its scroll position.
     const oldCard = root.querySelector('.card');
     const scroll = oldCard ? oldCard.scrollTop : 0;
+    // Same for the focused control, so controller navigation does not jump back to the top.
+    const focused = root.contains(document.activeElement) ? keyOf(document.activeElement) : null;
     root.innerHTML = `
       <div class="board">
         <div class="clip" aria-hidden="true"></div>
@@ -157,7 +190,7 @@ export function createMenu(root, controls, { onFly, onQuality, onJetType, onUnit
                 ${ACTIONS.map(([action, label]) => line(label, view === 'pad' ? padButton(action) : keyButton(action, 0) + keyButton(action, 1))).join('')}
               </div>
               ${view === 'pad' ? `
-                <p class="hint">Click an input, then press a button or trigger or push a stick. ${menuBtn} cancels, Backspace clears it.</p>
+                <p class="hint">Click or choose an input, then press a button or trigger or push a stick. ${menuBtn} cancels, Backspace clears it.</p>
                 <button class="reset" data-pad-reset>Reset controller</button>` : `
                 <p class="hint">Click a key, then press the new key or mouse button. Backspace clears it, Esc cancels.${usesCtrl && !IS_MAC ? ' On Windows, Ctrl can trigger browser shortcuts like Ctrl+W.' : ''}</p>
                 <button class="reset" data-reset>Reset keys to ${PRESETS[c.preset].name}</button>`}
@@ -180,6 +213,7 @@ export function createMenu(root, controls, { onFly, onQuality, onJetType, onUnit
       </div>`;
 
     root.querySelector('.card').scrollTop = scroll;
+    if (focused && !root.querySelector('.key.waiting')) root.querySelector(focused)?.focus({ preventScroll: true });
 
     root.querySelectorAll('[data-jet]').forEach((b) => b.addEventListener('click', () => {
       if (c.jetType === b.dataset.jet) return;
@@ -279,11 +313,105 @@ export function createMenu(root, controls, { onFly, onQuality, onJetType, onUnit
     root.querySelector('[data-fly]').addEventListener('click', fly);
   }
 
+  function focusables() {
+    return [...root.querySelectorAll('.card button:not([disabled]), .card input, .tag')]
+      .filter((el) => rectOf(el).width > 0);
+  }
+
+  function focus(el) {
+    root.classList.add('pad-nav');
+    el.focus({ preventScroll: true });
+    if (!el.classList.contains('tag')) (el.classList.contains('sr') ? el.nextElementSibling : el).scrollIntoView({ block: 'center', behavior: REDUCED_MOTION ? 'auto' : 'smooth' });
+  }
+
+  // Nearest control in a direction: distance along it, plus a penalty for drifting sideways.
+  function move(dir) {
+    const list = focusables();
+    const cur = document.activeElement;
+    if (!list.includes(cur)) {
+      // First press: start at the first control in view.
+      const card = root.querySelector('.card').getBoundingClientRect();
+      const first = list.find((el) => rectOf(el).top >= card.top) || list[0];
+      if (first) focus(first);
+      return;
+    }
+    if (cur.type === 'range' && (dir === 'left' || dir === 'right')) {
+      const step = Number(cur.step) || 0.05;
+      const v = Number(cur.value) + (dir === 'right' ? step : -step);
+      cur.value = Math.min(Number(cur.max), Math.max(Number(cur.min), v));
+      cur.dispatchEvent(new Event('input', { bubbles: true }));
+      root.classList.add('pad-nav');
+      return;
+    }
+    const a = center(rectOf(cur));
+    let best = null;
+    let bestScore = Infinity;
+    for (const el of list) {
+      if (el === cur) continue;
+      const b = center(rectOf(el));
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const along = { up: -dy, down: dy, left: -dx, right: dx }[dir];
+      const across = dir === 'up' || dir === 'down' ? Math.abs(dx) : Math.abs(dy);
+      if (along <= 4) continue;
+      // Left and right stay on the same line.
+      if ((dir === 'left' || dir === 'right') && across > 12) continue;
+      const score = along + across * (dir === 'up' || dir === 'down' ? 0.5 : 2);
+      if (score < bestScore) {
+        bestScore = score;
+        best = el;
+      }
+    }
+    if (best) focus(best);
+  }
+
+  // Called once per frame while the menu is open.
+  function padNav(now, dt) {
+    if (!visible || !controls.gamepad || controls.padCapture) {
+      nav.dir = null;
+      return;
+    }
+    const dir = Object.keys(NAV_DIRS).find((d) => NAV_DIRS[d].some((code) => controls.padDown.has(code))) || null;
+    if (dir !== nav.dir) {
+      nav.dir = dir;
+      if (dir) {
+        move(dir);
+        nav.next = now + NAV_DELAY;
+      }
+    } else if (dir && now >= nav.next) {
+      move(dir);
+      nav.next = now + NAV_REPEAT;
+    }
+    const pressed = controls.padPressed;
+    if (pressed.has('Pad0')) {
+      const el = document.activeElement;
+      if (el && el.matches('[data-fly]')) {
+        stopWaiting();
+        onPadFly();
+      } else if (root.contains(el) && el.type !== 'range') {
+        root.classList.add('pad-nav');
+        el.click();
+      } else if (!root.contains(el)) move('down');
+    }
+    if (pressed.has('Pad1')) {
+      stopWaiting();
+      onPadFly();
+    }
+    // Right stick scrolls the card.
+    const scroll = (controls.padVal.get('Axis3+') || 0) - (controls.padVal.get('Axis3-') || 0);
+    if (scroll) root.querySelector('.card').scrollTop += scroll * 900 * dt;
+  }
+
   return {
+    padNav,
     show(v) {
       visible = v;
       clearTimeout(leaveTimer);
-      if (!visible) stopWaiting();
+      if (!visible) {
+        stopWaiting();
+        if (root.contains(document.activeElement)) document.activeElement.blur();
+        nav.dir = null;
+      }
       if (visible) {
         root.classList.remove('hidden', 'leaving');
         message = '';

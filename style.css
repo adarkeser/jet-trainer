@@ -244,6 +244,11 @@ input[type=range]::-moz-range-thumb {
 .reset[disabled] { opacity: 0.4; cursor: default; }
 .reset + .reset { margin-left: 16px; }
 
+/* Focus ring while the controller drives the menu */
+#menu.pad-nav :focus { outline: 2px solid var(--tag); outline-offset: 3px; }
+#menu.pad-nav .sr:focus + .box { outline: 2px solid var(--tag); outline-offset: 3px; }
+#menu.pad-nav input[type=range]:focus { outline-offset: 4px; }
+
 .hint { margin: 12px 0 0; font-size: 12.5px; line-height: 1.45; color: var(--ink-soft); }
 .reset {
   all: unset;

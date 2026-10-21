@@ -41,7 +41,7 @@ All presets share EA's BF6 defaults: W/S throttle, Left Shift afterburner, left 
 
 ## Controller (DualSense)
 
-Connect a DualSense by USB or Bluetooth and press any button on it; the menu shows it as connected. Press **Options** to fly and Options again to come back to the menu. Chrome and Edge report it in the standard gamepad layout; other browsers may need the buttons rebound. Xbox pads work too, with Xbox button names.
+Connect a DualSense by USB or Bluetooth and press any button on it; the menu shows it as connected. Press **Options** to fly and Options again to come back to the menu. Chrome and Edge report it in the standard gamepad layout; other browsers may need the buttons rebound. Xbox pads work too, with Xbox button names. The menu works from the controller too: D-pad or left stick moves between settings, Cross chooses, left and right move a slider, the right stick scrolls and Circle starts flying.
 
 Defaults follow EA's BF6 controller layout for jets: left stick up and down throttle and air brake, left and right yaw, L3 afterburner, right stick pitch and roll (stick down pulls the nose up, as in BF6), R2 fire, L2 zoom, R3 camera, D-pad down free look (the right stick moves the camera while it is on), Cross respawn, touchpad stats. On the attack jet Triangle switches weapon, D-pad left picks the gun and D-pad right the bombs. Afterburner and free look toggle on a tap, as in BF6, or hold if you turn that off. In Look and turn the right stick moves the aim point.
 
