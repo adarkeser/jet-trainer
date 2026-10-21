@@ -354,6 +354,31 @@ document.addEventListener('pointerlockerror', () => {
 addEventListener('keydown', (e) => {
   if (e.code === 'Escape' && state.flyMode === 'pad' && !controls.capture) setFlying(null);
 });
+// DualSense direct link: the menu shows it, and the triggers and light follow the game.
+controls.hid.onchange = () => menu.refresh();
+
+function dualSenseLight() {
+  const now = performance.now();
+  if (state.crashed) return [255, 20, 10];
+  if (state.paused) return [10, 40, 90];
+  if (state.warnings.some(([, level]) => level === 'danger')) return Math.sin(now / 60) > 0 ? [255, 0, 0] : [40, 0, 0];
+  if (weapon === 'gun' && gun.overheated) return [255, 50, 0];
+  if (fm.boost) return [255, 110, 0];
+  return [0, 80, 255];
+}
+
+function updateDualSense() {
+  const hid = controls.hid;
+  if (!hid.connected) return;
+  const c = controls.config;
+  const live = !state.paused && !state.crashed && c.triggers;
+  let right = 'off';
+  if (live) right = weapon === 'bombs' ? (bombs.ammo > 0 ? 'bombs' : 'off') : gun.overheated ? 'overheat' : gun.firing ? 'firing' : 'gun';
+  hid.setTriggers(right, live ? 'zoom' : 'off');
+  const [r, g, b] = c.lightbar ? dualSenseLight() : [0, 0, 0];
+  hid.setLight(r, g, b);
+}
+
 addEventListener('gamepadconnected', () => {
   controls.poll();
   menu.refresh();
@@ -443,6 +468,7 @@ function frame() {
   if (state.paused) menu.padNav(performance.now(), dt);
   if (!state.paused && rawDt < 0.25) adaptResolution(rawDt);
   if (!state.paused) step(dt);
+  updateDualSense();
   placeCamera(dt);
   world.update(camera, fm.position);
   graphics.render();

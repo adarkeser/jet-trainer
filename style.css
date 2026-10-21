@@ -241,6 +241,8 @@ input[type=range]::-moz-range-thumb {
 .pad-status.on { color: var(--ink); }
 .pad-status.on::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #2f8a50; margin-right: 7px; vertical-align: 1px; }
 .reset.inline { margin: 0 6px 0 0; }
+.hid-on { font-size: 13px; color: var(--ink); margin-right: 8px; }
+.rumble-res { font-family: var(--mono); font-size: 12px; color: var(--ink-soft); margin-right: 8px; }
 .reset[disabled] { opacity: 0.4; cursor: default; }
 .reset + .reset { margin-left: 16px; }
 

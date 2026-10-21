@@ -1,4 +1,5 @@
 // Input: key bindings, mouse handling and the control presets.
+import { DualSenseHID } from './dualsense.js';
 
 // v2: BF6 layout (Shift afterburner, C camera). Older saves are ignored so nobody keeps clashing keys.
 const STORAGE_KEY = 'jet-trainer.controls.v2';
@@ -209,6 +210,8 @@ function presetConfig(id, base = {}) {
     padInvertY: base.padInvertY ?? false,
     padToggle: base.padToggle ?? true,
     rumble: base.rumble ?? true,
+    triggers: base.triggers ?? true,
+    lightbar: base.lightbar ?? true,
   };
 }
 
@@ -246,6 +249,10 @@ function deadzone(v, dz) {
 // Softer near the centre for fine aim, full rate at full deflection.
 const curve = (v) => Math.sign(v) * Math.abs(v) ** 1.6;
 
+// A real controller: the standard layout, or at least two sticks' worth of axes and a
+// face of buttons. Headset receivers (a Corsair HS80, say) report as gamepads without these.
+const isController = (p) => p.mapping === 'standard' || (p.axes.length >= 4 && p.buttons.length >= 10);
+
 const BLOCK_DEFAULT = new Set(['Space', 'Tab', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'AltLeft', 'AltRight']);
 
 export class Controls {
@@ -269,11 +276,23 @@ export class Controls {
     this.padLatch = { afterburner: false, freeLook: false };
     this.menuButton = false;
     this.lastDevice = 'kbm';
-    this.rumbleState = { s: 0, w: 0, ms: 0, sentAt: 0, until: 0, level: 0 };
+    // Pending request (s, w, ms, expires) and the effect running on the pad (until, level).
+    this.rumbleState = { s: 0, w: 0, ms: 0, expires: 0, sentAt: 0, until: 0, level: 0 };
+    this.rumbleResult = ''; // last answer from the pad, shown next to the Test button
 
     addEventListener('keydown', (e) => this.onKey(e, true));
     addEventListener('keyup', (e) => this.onKey(e, false));
     addEventListener('blur', () => this.reset());
+    // A hidden tab cannot rumble. Start clean when it comes back.
+    document.addEventListener('visibilitychange', () => {
+      this.stopRumble();
+      if (document.hidden) this.hid.reset();
+    });
+    // Direct DualSense link (WebHID) for rumble, adaptive triggers and the light bar.
+    this.hid = new DualSenseHID();
+    this.hid.reconnect();
+    // Leave the triggers free when the page goes away.
+    addEventListener('pagehide', () => this.hid.reset());
     const onButton = (e, isDown) => {
       let code = `Mouse${e.button}`;
       // macOS turns Ctrl+click into a right click. Ctrl is pitch down in some presets,
@@ -374,11 +393,17 @@ export class Controls {
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
     let gp = null;
     for (const p of pads) {
-      if (!p || !p.connected) continue;
+      if (!p || !p.connected || !isController(p)) continue;
       // Prefer a DualSense (Sony vendor id 054c) when several pads are connected.
       if (!gp || /dualsense|054c/i.test(p.id)) gp = p;
     }
+    // A DualSense on the direct Bluetooth link is read from its own reports (the browser loses it).
+    const direct = this.hid.gamepad(now);
+    if (direct) gp = direct;
     this.gamepad = gp;
+    this.pads = [...pads].filter((p) => p && p.connected);
+    if (direct) this.pads.push(direct);
+    // Headsets, wheels' pedals and the like also show up as gamepads. They are listed but never used.
     this.padVal.clear();
     const nowDown = new Set();
     if (gp) {
@@ -420,47 +445,127 @@ export class Controls {
     }
     if (pad.throttleDown && this.padDown.has(pad.throttleDown)) this.padLatch.afterburner = false;
 
+    this.hid.tick(now);
     this.flushRumble(now);
   }
 
-  // Queue a rumble for this frame. The strongest request wins, sent at most every 50 ms.
+  // Where a rumble can go. The pad we read input from first; if the browser gives it
+  // no motors (Steam Input, for one, hides the DualSense behind a virtual Xbox pad),
+  // any other connected pad that has them; Firefox's older hapticActuators last.
+  rumbleTarget() {
+    // The direct DualSense link first: it works where the browser gives no rumble.
+    if (this.hid.connected) {
+      return {
+        play: (s, w, ms) => {
+          this.hid.rumble(s, w, ms);
+          return Promise.resolve(this.hid.error || 'complete');
+        },
+        reset: () => this.hid.rumble(0, 0, 0),
+      };
+    }
+    const ordered = [this.gamepad, ...(this.pads || [])].filter(Boolean);
+    for (const p of ordered) {
+      const a = p.vibrationActuator;
+      if (a && a.playEffect) {
+        return {
+          play: (s, w, ms) => a.playEffect('dual-rumble', { startDelay: 0, duration: ms, strongMagnitude: s, weakMagnitude: w }),
+          reset: () => (a.reset ? a.reset() : null),
+        };
+      }
+    }
+    for (const p of ordered) {
+      const h = p.hapticActuators && p.hapticActuators[0];
+      if (h && h.pulse) return { play: (s, w, ms) => h.pulse(Math.max(s, w), ms), reset: () => null };
+    }
+    return null;
+  }
+
+  // What the browser reports for each connected pad, for the menu.
+  padReport() {
+    return (this.pads || []).map((p) => ({
+      name: p.id.replace(/\s*\(.*\)\s*$/, '') || 'Controller',
+      mapping: p.direct ? 'Bluetooth direct link' : p.mapping === 'standard' ? 'standard layout' : 'non-standard layout',
+      rumble: !!(p.direct || (p.vibrationActuator && p.vibrationActuator.playEffect) || (p.hapticActuators && p.hapticActuators.length)),
+      used: p === this.gamepad,
+      ignored: !isController(p),
+    }));
+  }
+
+  // Ask for a rumble. Requests in the same frame merge (strongest wins) and wait
+  // until the pad can take them, so a short event is never lost.
   buzz(strong, weak, ms) {
     if (!this.config.rumble) return;
     const r = this.rumbleState;
     r.s = Math.max(r.s, strong);
     r.w = Math.max(r.w, weak);
     r.ms = Math.max(r.ms, ms);
+    r.expires = Math.max(r.expires, performance.now() + ms);
   }
 
+  // Send the pending request when it is due. Each playEffect replaces the running
+  // effect, so: stronger requests go at once, equal ones top the effect up shortly
+  // before it ends, weaker ones wait for it to finish. Continuous rumble (gun,
+  // afterburner) then costs a few commands a second instead of one per frame,
+  // which some pads drop over Bluetooth.
   flushRumble(now) {
     const r = this.rumbleState;
-    const act = this.gamepad && this.gamepad.vibrationActuator;
     if (!r.s && !r.w) return;
-    const level = Math.max(r.s, r.w);
-    // A new effect replaces the running one, so a weak pulse must not cut a strong one short.
-    const blocked = now < r.until && level < r.level;
-    if (act && !blocked && now - r.sentAt >= 50) {
-      const duration = Math.max(r.ms, 70);
-      try {
-        const p = act.playEffect('dual-rumble', { startDelay: 0, duration, strongMagnitude: Math.min(1, r.s), weakMagnitude: Math.min(1, r.w) });
-        if (p && p.catch) p.catch(() => {});
-      } catch { /* no rumble support */ }
-      r.sentAt = now;
-      r.until = now + duration;
-      r.level = level;
+    const clear = () => { r.s = r.w = r.ms = r.expires = 0; };
+    const act = this.rumbleTarget();
+    if (!act) {
+      clear();
+      return;
     }
-    r.s = r.w = r.ms = 0;
+    const level = Math.max(r.s, r.w);
+    const left = r.until - now;
+    const due = left <= 0 || level > r.level + 0.01 || (level >= r.level - 0.01 && left < 60);
+    if (!due || now - r.sentAt < 30) {
+      if (now > r.expires) clear();
+      return;
+    }
+    const duration = Math.max(r.ms, 200);
+    r.sentAt = now;
+    r.until = now + duration;
+    r.level = level;
+    try {
+      const p = act.play(Math.min(1, r.s), Math.min(1, r.w), duration);
+      if (p && p.then) {
+        p.then((res) => { this.rumbleResult = res; }, (err) => {
+          // Rejected (tab in the background, pad busy): forget it so the next request is sent.
+          this.rumbleResult = (err && err.name) || 'error';
+          r.until = 0;
+        });
+      }
+    } catch (err) {
+      this.rumbleResult = (err && err.name) || 'error';
+      r.until = 0;
+    }
+    clear();
   }
 
   stopRumble() {
-    const act = this.gamepad && this.gamepad.vibrationActuator;
-    this.rumbleState.until = 0;
+    const act = this.rumbleTarget();
+    const r = this.rumbleState;
+    r.s = r.w = r.ms = r.expires = r.until = r.level = 0;
     try {
-      if (act && act.reset) {
+      if (act) {
         const p = act.reset();
         if (p && p.catch) p.catch(() => {});
       }
     } catch { /* ignore */ }
+  }
+
+  // Strong test pulse for the menu. Resolves to what the pad answered.
+  testRumble() {
+    const act = this.rumbleTarget();
+    if (!act) return Promise.resolve('no vibration from this browser');
+    this.stopRumble();
+    try {
+      return Promise.resolve(act.play(0.8, 0.8, 400))
+        .then((res) => (this.rumbleResult = res === true ? 'complete' : res), (err) => (this.rumbleResult = (err && err.name) || 'error'));
+    } catch (err) {
+      return Promise.resolve((this.rumbleResult = (err && err.name) || 'error'));
+    }
   }
 
   // Label for the first binding of an action, on whichever device was used last.
