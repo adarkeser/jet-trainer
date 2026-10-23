@@ -5,6 +5,10 @@ import { DualSenseHID } from './dualsense.js';
 
 const IS_MAC = /Mac/.test(navigator.platform);
 const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)').matches;
+// Phones and tablets: no keys and no mouse to lock. A trackpad or mouse on a tablet counts as a computer.
+const TOUCH_ONLY = matchMedia('(hover: none) and (pointer: coarse)').matches || /iPhone|iPod|Android.+Mobile/i.test(navigator.userAgent);
+
+const FOOTER = '<footer>Fan made, not affiliated with EA or DICE. <a href="https://github.com/adarkeser/jet-trainer" target="_blank" rel="noopener">Source on GitHub</a></footer>';
 
 // Pencil tick for checked boxes.
 const TICK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 12.8c2.1 1.5 3.7 3.3 5.1 5.5 2.7-5.3 6.5-10.2 11.9-14.6" /></svg>';
@@ -66,8 +70,11 @@ export function createMenu(root, controls, { onFly, onPadFly, onQuality, onJetTy
   document.addEventListener('fullscreenchange', syncFullscreen);
   document.addEventListener('webkitfullscreenchange', syncFullscreen);
 
+  // A controller paired with the phone still flies, so connecting one brings back the full card.
+  const touchOnly = () => TOUCH_ONLY && !controls.gamepad;
+
   root.addEventListener('click', (e) => {
-    if (e.target === root) fly();
+    if (e.target === root && !touchOnly()) fly();
   });
 
   function fly() {
@@ -95,7 +102,35 @@ export function createMenu(root, controls, { onFly, onPadFly, onQuality, onJetTy
     return line(label, `<input type="checkbox" class="sr" id="${id}" ${checked ? 'checked' : ''}><label class="box" for="${id}">${TICK}</label>`, id);
   }
 
+  function renderTouchOnly() {
+    const link = location.origin + location.pathname;
+    root.innerHTML = `
+      <div class="board touch-only">
+        <div class="clip" aria-hidden="true"></div>
+        <div class="card">
+          <header>
+            <h1>Jet trainer</h1>
+          </header>
+          <section class="away">
+            <h2>Play on a computer</h2>
+            <p>Jet trainer needs a keyboard and mouse, or a controller. It does not work on touch screens.</p>
+            ${line(`<span class="addr">${location.host.replace(/^www\./, '')}${location.pathname}</span>`, '<button class="reset inline" data-copy>Copy link</button>')}
+            <p class="hint">Controller paired with this device? Press a button on it.</p>
+          </section>
+          ${FOOTER}
+        </div>
+      </div>`;
+    root.querySelector('[data-copy]').addEventListener('click', (e) => {
+      const b = e.currentTarget;
+      navigator.clipboard?.writeText(link).then(() => { b.textContent = 'Copied'; }, () => {});
+    });
+  }
+
   function render() {
+    if (touchOnly()) {
+      renderTouchOnly();
+      return;
+    }
     const c = controls.config;
     const keyButton = (action, slot) => {
       const code = c.keys[action][slot];
@@ -220,7 +255,7 @@ export function createMenu(root, controls, { onFly, onPadFly, onQuality, onJetTy
               ${canFullscreen ? checkbox('fullscreen', 'Full screen', isFullscreen()) : ''}
             </li>
           </ol>
-          <footer>Fan made, not affiliated with EA or DICE. <a href="https://github.com/adarkeser/jet-trainer" target="_blank" rel="noopener">Source on GitHub</a></footer>
+          ${FOOTER}
         </div>
         <button class="tag" data-fly>
           <span class="grommet" aria-hidden="true"></span>

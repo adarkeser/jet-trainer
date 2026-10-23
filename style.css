@@ -321,6 +321,15 @@ footer a { color: inherit; text-underline-offset: 2px; }
   color: var(--ink);
 }
 
+/* Phones and tablets: a short card with no tag, so the board only grows as tall as it */
+.board.touch-only { align-self: flex-start; }
+.touch-only .card { height: auto; padding-bottom: 24px; }
+.away { margin-top: 22px; padding-top: 16px; border-top: 1.5px solid var(--ink); }
+.away h2 { margin: 0 0 8px; font-size: 16px; font-weight: 700; }
+.away > p:not(.hint) { margin: 0 0 8px; font-size: 14px; line-height: 1.45; }
+.addr { font-family: var(--mono); font-size: 13px; font-weight: 700; }
+.touch-only .what { white-space: normal; overflow-wrap: anywhere; }
+
 :focus-visible { outline: 2px solid var(--tag); outline-offset: 2px; }
 
 @media (max-width: 560px) {
